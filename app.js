@@ -6,6 +6,41 @@
 
 const FAL_BASE = 'https://queue.fal.run';
 
+// ── Key persistence (localStorage) ───────────
+
+const LS_FAL = 'cruise_ad_fal_key';
+const LS_ANT = 'cruise_ad_anthropic_key';
+
+function loadSavedKeys() {
+  const falKey       = localStorage.getItem(LS_FAL);
+  const anthropicKey = localStorage.getItem(LS_ANT);
+  if (falKey)       document.getElementById('falKey').value       = falKey;
+  if (anthropicKey) document.getElementById('anthropicKey').value = anthropicKey;
+  if (falKey || anthropicKey) document.getElementById('rememberKeys').checked = true;
+}
+
+function handleRememberToggle() {
+  const remember = document.getElementById('rememberKeys').checked;
+  if (!remember) {
+    localStorage.removeItem(LS_FAL);
+    localStorage.removeItem(LS_ANT);
+    document.getElementById('rememberNote').textContent = 'Keys cleared from browser storage.';
+    setTimeout(() => document.getElementById('rememberNote').textContent = 'Stored in browser only — never sent to any server.', 2500);
+  } else {
+    saveKeysIfRequired();
+  }
+}
+
+function saveKeysIfRequired() {
+  if (!document.getElementById('rememberKeys').checked) return;
+  const fal = document.getElementById('falKey').value.trim();
+  const ant = document.getElementById('anthropicKey').value.trim();
+  if (fal) localStorage.setItem(LS_FAL, fal);
+  if (ant) localStorage.setItem(LS_ANT, ant);
+}
+
+document.addEventListener('DOMContentLoaded', loadSavedKeys);
+
 // ── Helpers ──────────────────────────────────
 
 function getFormatDims(fmt) {
@@ -247,6 +282,7 @@ async function startPipeline() {
   const o3           = document.getElementById('overlay3').value.trim();
 
   if (!falKey) { alert('Please enter your fal.ai API key'); return; }
+  saveKeysIfRequired();
 
   const overlays    = [o1, o2, o3];
   const hasOverlays = overlays.some(o => o.length > 0);
