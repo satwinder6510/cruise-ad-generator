@@ -87,6 +87,11 @@
     <input class="input-key" type="password" id="anthropicKey" placeholder="sk-ant-xxxxxxxxxxxxxxxx" />
     <div class="tip">Keys are never stored — session only. Refresh page to clear.</div>
   </div>
+  <div class="field" style="display:flex;align-items:center;gap:10px;margin-top:0.25rem">
+    <input type="checkbox" id="rememberKeys" onchange="handleRememberToggle()" style="width:auto;padding:0;accent-color:var(--gold);" />
+    <label for="rememberKeys" style="margin:0;text-transform:none;font-size:12px;cursor:pointer;letter-spacing:0">Remember keys in this browser</label>
+  </div>
+  <div id="rememberNote" class="tip" style="margin-top:0.3rem">Stored in browser only — never sent to any server.</div>
 </div>
 
 <div class="card">
