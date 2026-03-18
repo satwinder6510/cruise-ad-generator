@@ -15,6 +15,19 @@ function saveKeysIfRequired() {
   // Intentionally empty — keys are session-only
 }
 
+function toggleImageSource() {
+  const isUpload = document.getElementById('srcUpload').checked;
+  document.getElementById('uploadField').style.display = isUpload ? 'block' : 'none';
+  document.getElementById('aiFields').style.display    = isUpload ? 'none'  : 'block';
+}
+
+// Upload image to fal.ai storage, returns a hosted URL for Seedance
+async function uploadImageToFal(file, falKey) {
+  const fal = await getFalClient(falKey);
+  const url  = await fal.storage.upload(file);
+  return url;
+}
+
 // ── Helpers ───────────────────────────────────
 
 function getFormatDims(fmt) {
@@ -272,28 +285,52 @@ async function startPipeline() {
   let totalCost   = 0.003;
   let rawVideoUrl = null;
 
-  // ── Stage 1: Image via Flux Dev ──────────────
+  // ── Stage 1: Image — AI generated or uploaded ──
   let imageUrl;
-  try {
-    setStage('Image', 'running', 'Submitting to Flux Schnell...', 10);
-    const imgResult = await falRun('fal-ai/flux/schnell', {
-      prompt: `luxury river cruise ship on the ${destination}, ${season}, ${mood}, passengers visible on deck, ultra-photorealistic travel photography, cinematic wide shot, 8k, no illustration, no painting`,
-      image_size: dims.image_size,
-      num_inference_steps: 4,
-      num_images: 1,
-      enable_safety_checker: true
-    }, falKey, p => setStage('Image', 'running', 'Generating...', p));
+  const isUpload = document.getElementById('srcUpload').checked;
 
-    console.log('FAL IMAGE RESPONSE:', JSON.stringify(imgResult, null, 2));
-    imageUrl = imgResult?.data?.images?.[0]?.url || imgResult?.images?.[0]?.url;
-    if (!imageUrl) throw new Error('No image URL returned from Flux. Response: ' + JSON.stringify(imgResult).slice(0, 200));
-    document.getElementById('previewImage').src = imageUrl;
-    document.getElementById('previewImage').style.display = 'block';
-    setStage('Image', 'done', 'Image generated', 100);
-  } catch (e) {
-    setStage('Image', 'error', e.message, 0);
-    document.getElementById('generateBtn').disabled = false;
-    return;
+  if (isUpload) {
+    const file = document.getElementById('imageUpload').files[0];
+    if (!file) {
+      alert('Please select an image to upload');
+      document.getElementById('generateBtn').disabled = false;
+      return;
+    }
+    try {
+      setStage('Image', 'running', 'Uploading image to fal.ai...', 30);
+      imageUrl = await uploadImageToFal(file, falKey);
+      const preview = document.getElementById('previewImage');
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = 'block';
+      setStage('Image', 'done', 'Image uploaded', 100);
+      totalCost -= 0.003; // No image generation cost
+    } catch (e) {
+      setStage('Image', 'error', e.message, 0);
+      document.getElementById('generateBtn').disabled = false;
+      return;
+    }
+  } else {
+    try {
+      setStage('Image', 'running', 'Submitting to Flux Schnell...', 10);
+      const imgResult = await falRun('fal-ai/flux/schnell', {
+        prompt: `luxury river cruise ship on the ${destination}, ${season}, ${mood}, passengers visible on deck, ultra-photorealistic travel photography, cinematic wide shot, 8k, no illustration, no painting`,
+        image_size: dims.image_size,
+        num_inference_steps: 4,
+        num_images: 1,
+        enable_safety_checker: true
+      }, falKey, p => setStage('Image', 'running', 'Generating...', p));
+
+      console.log('FAL IMAGE RESPONSE:', JSON.stringify(imgResult, null, 2));
+      imageUrl = imgResult?.data?.images?.[0]?.url || imgResult?.images?.[0]?.url;
+      if (!imageUrl) throw new Error('No image URL returned from Flux. Response: ' + JSON.stringify(imgResult).slice(0, 200));
+      document.getElementById('previewImage').src = imageUrl;
+      document.getElementById('previewImage').style.display = 'block';
+      setStage('Image', 'done', 'Image generated', 100);
+    } catch (e) {
+      setStage('Image', 'error', e.message, 0);
+      document.getElementById('generateBtn').disabled = false;
+      return;
+    }
   }
 
   // ── Stage 2: Video via Seedance Lite ──────────
