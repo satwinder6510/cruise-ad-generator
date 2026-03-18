@@ -2,9 +2,8 @@
 // River Cruise Ad Generator — app.js
 // Pipeline: Flux (image) → Seedance (video) → Canvas (text overlay) → Claude (copy)
 // Docs: See README.md for API key setup and deployment instructions
+// v3 — uses fal.ai JS client (esm.sh) to avoid CORS issues on GitHub Pages
 // ─────────────────────────────────────────────
-
-const FAL_BASE = 'https://queue.fal.run';
 
 // ── Key persistence (localStorage) ───────────
 
@@ -12,16 +11,15 @@ const LS_FAL = 'cruise_ad_fal_key';
 const LS_ANT = 'cruise_ad_anthropic_key';
 
 function loadSavedKeys() {
-  const falKey       = localStorage.getItem(LS_FAL);
-  const anthropicKey = localStorage.getItem(LS_ANT);
-  if (falKey)       document.getElementById('falKey').value       = falKey;
-  if (anthropicKey) document.getElementById('anthropicKey').value = anthropicKey;
-  if (falKey || anthropicKey) document.getElementById('rememberKeys').checked = true;
+  const falKey  = localStorage.getItem(LS_FAL);
+  const antKey  = localStorage.getItem(LS_ANT);
+  if (falKey)  document.getElementById('falKey').value       = falKey;
+  if (antKey)  document.getElementById('anthropicKey').value = antKey;
+  if (falKey || antKey) document.getElementById('rememberKeys').checked = true;
 }
 
 function handleRememberToggle() {
-  const remember = document.getElementById('rememberKeys').checked;
-  if (!remember) {
+  if (!document.getElementById('rememberKeys').checked) {
     localStorage.removeItem(LS_FAL);
     localStorage.removeItem(LS_ANT);
     document.getElementById('rememberNote').textContent = 'Keys cleared from browser storage.';
@@ -33,15 +31,15 @@ function handleRememberToggle() {
 
 function saveKeysIfRequired() {
   if (!document.getElementById('rememberKeys').checked) return;
-  const fal = document.getElementById('falKey').value.trim();
-  const ant = document.getElementById('anthropicKey').value.trim();
-  if (fal) localStorage.setItem(LS_FAL, fal);
-  if (ant) localStorage.setItem(LS_ANT, ant);
+  const fk = document.getElementById('falKey').value.trim();
+  const ak = document.getElementById('anthropicKey').value.trim();
+  if (fk) localStorage.setItem(LS_FAL, fk);
+  if (ak) localStorage.setItem(LS_ANT, ak);
 }
 
 document.addEventListener('DOMContentLoaded', loadSavedKeys);
 
-// ── Helpers ──────────────────────────────────
+// ── Helpers ───────────────────────────────────
 
 function getFormatDims(fmt) {
   if (fmt === '9:16') return { image_size: 'portrait_16_9',  aspect_ratio: '9:16', w: 720,  h: 1280 };
@@ -51,52 +49,43 @@ function getFormatDims(fmt) {
 
 function setStage(id, status, msg, progress) {
   const labels = { wait: 'Waiting', running: 'Running', done: 'Done', error: 'Error' };
-  document.getElementById('badge' + id).className = 'badge badge-' + status;
+  document.getElementById('badge' + id).className  = 'badge badge-' + status;
   document.getElementById('badge' + id).textContent = labels[status];
   document.getElementById('msg'   + id).textContent = msg;
   document.getElementById('prog'  + id).style.width = progress + '%';
 }
 
-// ── fal.ai queue polling ──────────────────────
+// ── fal.ai client (loaded once via ESM) ───────
 
-async function falQueue(endpoint, input, falKey, onProgress) {
-  const submitRes = await fetch(`${FAL_BASE}/${endpoint}`, {
-    method: 'POST',
-    headers: { 'Authorization': `Key ${falKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(input)
-  });
-  if (!submitRes.ok) {
-    const err = await submitRes.text();
-    throw new Error(`fal.ai submit failed (${submitRes.status}): ${err}`);
+let falClient = null;
+
+async function getFalClient(apiKey) {
+  if (!falClient) {
+    const mod = await import('https://esm.sh/@fal-ai/client');
+    falClient = mod.fal;
   }
-  const { request_id } = await submitRes.json();
+  falClient.config({ credentials: apiKey });
+  return falClient;
+}
 
-  let attempts = 0;
-  while (attempts < 150) {
-    await new Promise(r => setTimeout(r, 3000));
-    const sRes = await fetch(`${FAL_BASE}/${endpoint}/requests/${request_id}/status`, {
-      headers: { 'Authorization': `Key ${falKey}` }
-    });
-    const s = await sRes.json();
-    if (s.status === 'COMPLETED') {
-      const rRes = await fetch(`${FAL_BASE}/${endpoint}/requests/${request_id}`, {
-        headers: { 'Authorization': `Key ${falKey}` }
-      });
-      return await rRes.json();
+async function falRun(endpoint, input, apiKey, onProgress) {
+  const fal = await getFalClient(apiKey);
+  let attempt = 0;
+  const result = await fal.subscribe(endpoint, {
+    input,
+    pollInterval: 3000,
+    onQueueUpdate: (update) => {
+      attempt++;
+      if (onProgress) onProgress(Math.min(15 + attempt * 3, 88));
     }
-    if (s.status === 'FAILED') throw new Error('Generation failed on fal.ai');
-    attempts++;
-    if (onProgress) onProgress(Math.min(15 + attempts * 2.5, 88));
-  }
-  throw new Error('Timeout — generation took over 7 minutes');
+  });
+  return result;
 }
 
 // ── Canvas text overlay ───────────────────────
 
 function drawTextOverlay(ctx, text, currentTime, startTime, endTime, cW, cH, position) {
   if (currentTime < startTime || currentTime >= endTime) return;
-
-  // Fade in/out
   const fade = 0.3;
   let alpha = 1;
   if (currentTime < startTime + fade) alpha = (currentTime - startTime) / fade;
@@ -121,7 +110,6 @@ function drawTextOverlay(ctx, text, currentTime, startTime, endTime, cW, cH, pos
   else if (position === 'bottom') yBase = cH * 0.86;
   else                            yBase = cH * 0.5;
 
-  // Semi-transparent pill background
   const maxW = lines.reduce((m, l) => Math.max(m, ctx.measureText(l).width), 0);
   const padX = 32, padY = 14;
   const boxW = maxW + padX * 2;
@@ -140,7 +128,6 @@ function drawTextOverlay(ctx, text, currentTime, startTime, endTime, cW, cH, pos
 
 async function burnTextIntoVideo(videoUrl, overlays, dims) {
   setStage('Overlay', 'running', 'Fetching video file...', 8);
-
   const blob    = await fetch(videoUrl).then(r => {
     if (!r.ok) throw new Error('Could not fetch video: ' + r.status);
     return r.blob();
@@ -181,12 +168,9 @@ async function burnTextIntoVideo(videoUrl, overlays, dims) {
         }
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const t = video.currentTime;
-
-        // Overlay schedule: line1 = 0-2s top, line2 = 2-4s centre, line3 = 4-end bottom
         if (overlays[0]) drawTextOverlay(ctx, overlays[0], t, 0, 2,        canvas.width, canvas.height, 'top');
         if (overlays[1]) drawTextOverlay(ctx, overlays[1], t, 2, 4,        canvas.width, canvas.height, 'middle');
         if (overlays[2]) drawTextOverlay(ctx, overlays[2], t, 4, duration, canvas.width, canvas.height, 'bottom');
-
         const pct = Math.round((t / duration) * 100);
         setStage('Overlay', 'running', `Rendering frames: ${pct}%`, 20 + Math.round(pct * 0.7));
         requestAnimationFrame(renderFrame);
@@ -312,11 +296,11 @@ async function startPipeline() {
   let totalCost   = 0.003;
   let rawVideoUrl = null;
 
-  // ── Stage 1: Image via Flux Dev ──
+  // ── Stage 1: Image via Flux Dev ──────────────
   let imageUrl;
   try {
     setStage('Image', 'running', 'Submitting to Flux Dev...', 10);
-    const imgResult = await falQueue('fal-ai/flux/dev', {
+    const imgResult = await falRun('fal-ai/flux/dev', {
       prompt: `luxury river cruise ship on the ${destination}, ${season}, ${mood}, passengers visible on deck, ultra-photorealistic travel photography, cinematic wide shot, 8k, --style raw, no illustration, no painting`,
       image_size: dims.image_size,
       num_inference_steps: 28,
@@ -336,10 +320,10 @@ async function startPipeline() {
     return;
   }
 
-  // ── Stage 2: Video via Seedance Lite ──
+  // ── Stage 2: Video via Seedance Lite ──────────
   try {
     setStage('Video', 'running', 'Submitting to Seedance Lite...', 10);
-    const vidResult = await falQueue('fal-ai/bytedance/seedance/v1/lite/image-to-video', {
+    const vidResult = await falRun('fal-ai/bytedance/seedance/v1/lite/image-to-video', {
       image_url: imageUrl,
       prompt: `camera slowly pans across the ${destination}, water gently rippling, soft ${season} light, smooth cinematic motion, peaceful`,
       aspect_ratio: dims.aspect_ratio,
@@ -356,7 +340,7 @@ async function startPipeline() {
     return;
   }
 
-  // ── Stages 3 & 4 run in parallel ──
+  // ── Stages 3 & 4 in parallel ─────────────────
 
   const overlayTask = (async () => {
     if (!hasOverlays) {
@@ -372,7 +356,6 @@ async function startPipeline() {
       const finalBlob = await burnTextIntoVideo(rawVideoUrl, overlays, dims);
       const finalUrl  = URL.createObjectURL(finalBlob);
       const ext = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
-
       document.getElementById('previewVideo').src = finalUrl;
       document.getElementById('previewVideo').style.display = 'block';
       document.getElementById('downloadFinal').href = finalUrl;
