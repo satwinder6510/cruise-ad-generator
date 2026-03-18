@@ -309,8 +309,8 @@ async function startPipeline() {
       enable_safety_checker: true
     }, falKey, p => setStage('Image', 'running', 'Generating...', p));
 
-    imageUrl = imgResult.images?.[0]?.url;
-    if (!imageUrl) throw new Error('No image URL returned from Flux');
+    imageUrl = imgResult?.data?.images?.[0]?.url || imgResult?.images?.[0]?.url;
+    if (!imageUrl) throw new Error('No image URL returned from Flux. Response: ' + JSON.stringify(imgResult).slice(0, 200));
     document.getElementById('previewImage').src = imageUrl;
     document.getElementById('previewImage').style.display = 'block';
     setStage('Image', 'done', 'Image generated', 100);
@@ -330,8 +330,8 @@ async function startPipeline() {
       duration: 5
     }, falKey, p => setStage('Video', 'running', 'Animating...', p));
 
-    rawVideoUrl = vidResult.video?.url;
-    if (!rawVideoUrl) throw new Error('No video URL returned from Seedance');
+    rawVideoUrl = vidResult?.data?.video?.url || vidResult?.video?.url;
+    if (!rawVideoUrl) throw new Error('No video URL returned from Seedance. Response: ' + JSON.stringify(vidResult).slice(0, 200));
     setStage('Video', 'done', '5-second video generated', 100);
     totalCost += 0.18;
   } catch (e) {
