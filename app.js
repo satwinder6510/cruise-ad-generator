@@ -253,6 +253,8 @@ async function startPipeline() {
   const o1           = document.getElementById('overlay1').value.trim();
   const o2           = document.getElementById('overlay2').value.trim();
   const o3           = document.getElementById('overlay3').value.trim();
+  const videoPrompt  = document.getElementById('videoPrompt').value.trim()
+                       || `camera slowly pans across the scene, water gently rippling, smooth cinematic motion, peaceful`;
 
   if (!falKey) { alert('Please enter your fal.ai API key'); return; }
   saveKeysIfRequired();
@@ -338,7 +340,7 @@ async function startPipeline() {
     setStage('Video', 'running', 'Submitting to Seedance Lite...', 10);
     const vidResult = await falRun('fal-ai/bytedance/seedance/v1/lite/image-to-video', {
       image_url: imageUrl,
-      prompt: `camera slowly pans across the ${destination}, water gently rippling, soft ${season} light, smooth cinematic motion, peaceful`,
+      prompt: videoPrompt,
       aspect_ratio: dims.aspect_ratio,
       duration: 5
     }, falKey, p => setStage('Video', 'running', 'Animating...', p));
