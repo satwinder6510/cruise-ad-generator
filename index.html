@@ -139,14 +139,22 @@
       </select>
     </div>
     <div class="field">
-      <label>Mood</label>
-      <select id="mood">
-        <option value="luxury romantic aspirational">Luxury / Romantic</option>
-        <option value="adventure discovery exciting">Adventure</option>
-        <option value="relaxing peaceful serene">Relaxing / Peaceful</option>
-        <option value="festive celebratory joyful">Festive</option>
+      <label>Video Duration</label>
+      <select id="duration">
+        <option value="5">5 seconds</option>
+        <option value="8" selected>8 seconds</option>
+        <option value="10">10 seconds</option>
       </select>
     </div>
+  </div>
+  <div class="field" style="margin-top:0.75rem">
+    <label>Mood</label>
+    <select id="mood">
+      <option value="luxury romantic aspirational">Luxury / Romantic</option>
+      <option value="adventure discovery exciting">Adventure</option>
+      <option value="relaxing peaceful serene">Relaxing / Peaceful</option>
+      <option value="festive celebratory joyful">Festive</option>
+    </select>
   </div>
   <div class="field">
     <label>Offer / Price Hook (optional)</label>
@@ -163,15 +171,15 @@
     <div class="tip">Describes how the image should move — keep it simple and cinematic</div>
   </div>
   <div class="field">
-    <label>Line 1 &middot; 0–2s — Destination hook (top)</label>
+    <label>Line 1 &middot; Opening — Destination hook (top)</label>
     <input type="text" id="overlay1" placeholder="e.g. Discover the Rhine" />
   </div>
   <div class="field">
-    <label>Line 2 &middot; 2–4s — Offer / benefit (centre)</label>
+    <label>Line 2 &middot; Middle — Offer / benefit (centre)</label>
     <input type="text" id="overlay2" placeholder="e.g. From £1,299pp · All inclusive" />
   </div>
   <div class="field">
-    <label>Line 3 &middot; 4–5s — CTA (bottom)</label>
+    <label>Line 3 &middot; Closing — CTA (bottom)</label>
     <input type="text" id="overlay3" placeholder="e.g. Book your 2025 cruise today" />
   </div>
   <button class="btn" id="generateBtn" onclick="startPipeline()">&#9654; Generate Ad Creative</button>
