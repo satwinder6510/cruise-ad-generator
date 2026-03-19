@@ -100,25 +100,21 @@ const OVERLAY_STYLES = {
 
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
-// ── Creative Director system prompt ───────────
+// ── Two-step brief prompts ───────────────────
 
-const BRIEF_SYSTEM_PROMPT = `You are a Creative Director specializing in Meta/Facebook video ads.
+const ANALYSIS_SYSTEM_PROMPT = `You are a senior brand strategist specializing in Meta/Facebook advertising. Analyse business information and create a brand profile and ad strategy.
 
-CRITICAL RULE: Every scene description MUST be about the SPECIFIC business, their ACTUAL products/services, and their REAL customers. NEVER invent products, categories, or visuals that aren't described in the business info or brand website context provided. If the business sells handmade candles, every scene shows candles. If they sell accounting software, every scene shows that software. No generic stock-photo concepts.
+CRITICAL: Base your analysis ONLY on information provided. Do NOT invent products, services, or brand attributes that aren't explicitly described. If limited information is given, keep your analysis focused on what you know.`;
+
+const SCENE_BRIEF_SYSTEM_PROMPT = `You are a Creative Director specializing in Meta/Facebook video ads. You receive a brand analysis and must create scene-by-scene briefs.
+
+CRITICAL RULE: Every scene description MUST be about the SPECIFIC business, their ACTUAL products/services, and their REAL customers. Use the brand profile provided — do NOT invent anything beyond it.
 
 Facebook algorithm priorities:
 - **3-second rule**: Scene 1 must stop the scroll with a striking visual OF THE ACTUAL PRODUCT/SERVICE.
 - **Sound-off**: 85%+ watched muted. Overlay text tells the story.
 - **Hook-first**: Lead with the most compelling product visual or customer benefit.
-- **Emotional arc**: Scene 1 = attention (show the product), Scene 2 = desire (show the benefit), Scene 3 = proof (show results/social proof), Scene 4 (if present) = CTA/urgency.
-
-When brand website context is provided, you MUST:
-- Use the exact product names, categories, and terminology from the website
-- Match the brand's visual style (colors, mood, setting) in scene descriptions
-- Reference real offerings, not imagined ones
-- If the website shows specific products, describe those products in scenes
-
-When NO brand website context is provided, base everything strictly on the business name, target audience, and offer fields. Ask yourself "what does this business actually sell?" and only show that.`;
+- **Emotional arc**: Scene 1 = attention (show the product), Scene 2 = desire (show the benefit), Scene 3 = proof (show results/social proof), Scene 4 (if present) = CTA/urgency.`;
 
 // ── Format-aware defaults ─────────────────────
 
@@ -455,10 +451,14 @@ async function generateBrief() {
   if (!anthropicKey) { alert('Please enter your Anthropic API key to generate a brief'); return; }
   if (!businessName) { alert('Please enter a business/product name to generate a brief'); return; }
 
-  const targetAudience = document.getElementById('targetAudience').value.trim() || 'general audience';
+  const targetAudience = document.getElementById('targetAudience').value.trim();
   const adObjective = document.getElementById('adObjective').value;
   const adFormat = document.getElementById('adFormat').value;
   const offer = document.getElementById('offerHook').value.trim();
+  const whatYouSell = document.getElementById('whatYouSell').value.trim();
+  const brandTone = document.getElementById('brandTone').value.trim();
+  const brandColors = document.getElementById('brandColors').value.trim();
+  const sellingPoints = document.getElementById('sellingPoints').value.trim();
   const sceneCount = scenes.length;
 
   const formatContext = {
@@ -490,7 +490,7 @@ async function generateBrief() {
       if (proxyRes.ok) {
         const proxyData = await proxyRes.json();
         if (proxyData.text && !proxyData.error) {
-          brandContext = `\nBrand Website Context (from ${proxyData.title || brandUrl}):\n${proxyData.text}\n\nUse this to match the brand's tone, vocabulary, and positioning in scene descriptions and overlay text.\n`;
+          brandContext = proxyData.text;
           pipeline.brandContext = brandContext;
           log('success', `Brand website scraped: "${proxyData.title}" (${proxyData.text.length} chars)`);
         } else {
@@ -504,26 +504,97 @@ async function generateBrief() {
     }
   }
 
-  statusEl.textContent = 'Claude is planning your ad...';
+  // ── Step 1: Brand Analysis ──────────────────
+  statusEl.textContent = 'Analysing brand...';
 
-  // Product image awareness
-  let productContext = '';
-  if (productImages.length > 0) {
-    productContext = `\nYou have ${productImages.length} product image(s) available. You can assign product images to scenes by adding "useProduct": true and "productIndex": <0-based index> to scene objects.\nProduct scenes should have motion prompts that are very subtle (the product must not be altered). Do NOT include a "description" for product scenes — the real product photo is used instead.\n`;
-  }
+  // Build conditional prompt sections
+  const analysisLines = [`Analyse this business for a Meta ad campaign:\n\nBusiness: ${businessName}`];
+  if (whatYouSell)     analysisLines.push(`Products/Services: ${whatYouSell}`);
+  if (targetAudience)  analysisLines.push(`Target Audience: ${targetAudience}`);
+  if (adObjective)     analysisLines.push(`Campaign Objective: ${adObjective}`);
+  if (offer)           analysisLines.push(`Current Offer: ${offer}`);
+  if (brandTone)       analysisLines.push(`Brand Tone: ${brandTone}`);
+  if (brandColors)     analysisLines.push(`Brand Colors: ${brandColors}`);
+  if (sellingPoints)   analysisLines.push(`Key Selling Points:\n${sellingPoints}`);
+  if (brandContext)    analysisLines.push(`Website Content:\n${brandContext}`);
 
-  const userPrompt = `Generate a ${sceneCount}-scene video ad brief for this SPECIFIC business:
+  analysisLines.push(`\nReturn ONLY valid JSON — no markdown, no preamble:
+{
+  "businessSummary": "What this business does in 1-2 sentences",
+  "products": ["list of specific products/services to feature"],
+  "audience": "Refined target audience description",
+  "tone": "Brand voice description (adjectives)",
+  "visualStyle": "How scenes should look (colors, mood, lighting, setting)",
+  "differentiators": ["What makes them unique"],
+  "adStrategy": "Recommended approach for ${adObjective} objective in 2-3 sentences",
+  "hookAngle": "The single most compelling angle for Scene 1"
+}`);
 
-=== BUSINESS INFO (use this as your primary source) ===
-Business/Product: ${businessName}
-Target Audience: ${targetAudience}
-Ad Objective: ${adObjective}
-${offer ? `Offer/Hook: ${offer}` : 'No specific offer — create a compelling hook based on what this business actually sells'}
-Format: ${adFormat} — ${formatContext[adFormat] || 'Standard'}
-${brandContext ? `\n=== BRAND WEBSITE CONTENT (this is from their actual website — use it!) ===\n${brandContext}\nIMPORTANT: The scene descriptions MUST reflect the real products, services, and brand shown on this website. Do NOT invent products they don't sell.\n` : `\nNo brand website provided. Base all visuals strictly on "${businessName}" and the target audience above. Do NOT guess or invent products — keep scenes focused on what the business name and offer clearly imply.\n`}${productContext}
+  const analysisPrompt = analysisLines.join('\n');
+
+  try {
+    // Step 1 call
+    log('info', `Claude brand analysis → model=claude-sonnet-4-20250514, key=${maskKey(anthropicKey)}`);
+    const t0 = performance.now();
+    const res1 = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 800,
+        system: ANALYSIS_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: analysisPrompt }],
+      }),
+    });
+
+    const dur1 = ((performance.now() - t0) / 1000).toFixed(1);
+    if (!res1.ok) {
+      const errBody = await res1.text();
+      log('error', `Claude brand analysis ← HTTP ${res1.status} after ${dur1}s: ${errBody}`);
+      throw new Error('Claude API error ' + res1.status);
+    }
+    const data1 = await res1.json();
+    log('success', `Claude brand analysis ← ${dur1}s, usage: ${JSON.stringify(data1.usage || {})}`);
+    const text1 = data1.content[0].text.replace(/```json|```/g, '').trim();
+    log('debug', `Brand analysis raw:\n${text1.slice(0, 600)}${text1.length > 600 ? '...' : ''}`);
+
+    let brandProfile;
+    try {
+      brandProfile = JSON.parse(text1);
+    } catch (parseErr) {
+      log('error', `Brand analysis JSON parse failed: ${parseErr.message}\nRaw: ${text1}`);
+      throw parseErr;
+    }
+
+    // Store brand analysis for use in copy generation
+    pipeline.brandAnalysis = brandProfile;
+    log('success', `Brand analysis: "${brandProfile.businessSummary?.slice(0, 80)}..."`);
+
+    // ── Step 2: Scene Brief ──────────────────
+    statusEl.textContent = 'Planning scenes...';
+
+    // Product image awareness
+    let productContext = '';
+    if (productImages.length > 0) {
+      productContext = `\nYou have ${productImages.length} product image(s) available. You can assign product images to scenes by adding "useProduct": true and "productIndex": <0-based index> to scene objects.\nProduct scenes should have motion prompts that are very subtle (the product must not be altered). Do NOT include a "description" for product scenes — the real product photo is used instead.\n`;
+    }
+
+    const sceneBriefPrompt = `Generate a ${sceneCount}-scene video ad brief using this brand profile:
+
+=== BRAND PROFILE ===
+${JSON.stringify(brandProfile, null, 2)}
+
+=== FORMAT ===
+${adFormat} — ${formatContext[adFormat] || 'Standard'}
+${productContext}
 Return ONLY a valid JSON array with exactly ${sceneCount} objects. Each object must have:
 {
-  "description": "Photorealistic image prompt showing THIS business's actual product/service. Be specific: what product, what setting, what customer. No text in the image. No generic stock-photo concepts.",
+  "description": "Photorealistic image prompt showing THIS business's actual product/service. Be specific: what product, what setting, what customer. No text in the image. Use the visual style from the brand profile.",
   "motion": "Camera/motion prompt for video animation (e.g. 'slow zoom in with gentle parallax', 'smooth pan right revealing product')",
   "overlay": "Overlay text for this scene (concise, impactful, about THIS business)",
   "overlayPos": "top" | "centre" | "bottom",
@@ -534,17 +605,17 @@ Return ONLY a valid JSON array with exactly ${sceneCount} objects. Each object m
 }
 
 Rules:
-- EVERY scene description must be about "${businessName}" specifically — not generic lifestyle imagery
-- Scene 1 is the HOOK scene: show the hero product/service, bold/highlight style, large size
-- Scene descriptions: photorealistic, no text in the image, show the ACTUAL product/service
+- Use the hook angle from the brand profile for Scene 1
+- Scene 1 is the HOOK scene: bold/highlight style, large size, show the hero product
+- Use the brand's visual style (colors, mood, lighting) in every scene description
+- Feature specific products from the brand profile, not generic imagery
+- Overlay text: works with sound off, max 6 words, tells THIS brand's story
 - Motion prompts: subtle and cinematic, not jarring
-- Overlay text: works with sound off, max 6 words, tells the story of THIS business
 - Duration: prefer 5s for ${adFormat === '9:16' ? 'Stories/Reels' : 'most formats'}, 8s only for establishing shots`;
 
-  try {
-    log('info', `Claude brief → model=claude-sonnet-4-20250514, key=${maskKey(anthropicKey)}, scenes=${sceneCount}`);
-    const t0 = performance.now();
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    log('info', `Claude scene brief → model=claude-sonnet-4-20250514, scenes=${sceneCount}`);
+    const t1 = performance.now();
+    const res2 = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -555,27 +626,27 @@ Rules:
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1200,
-        system: BRIEF_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }],
+        system: SCENE_BRIEF_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: sceneBriefPrompt }],
       }),
     });
 
-    const dur = ((performance.now() - t0) / 1000).toFixed(1);
-    if (!res.ok) {
-      const errBody = await res.text();
-      log('error', `Claude brief ← HTTP ${res.status} after ${dur}s: ${errBody}`);
-      throw new Error('Claude API error ' + res.status);
+    const dur2 = ((performance.now() - t1) / 1000).toFixed(1);
+    if (!res2.ok) {
+      const errBody = await res2.text();
+      log('error', `Claude scene brief ← HTTP ${res2.status} after ${dur2}s: ${errBody}`);
+      throw new Error('Claude API error ' + res2.status);
     }
-    const data = await res.json();
-    log('success', `Claude brief ← ${dur}s, usage: ${JSON.stringify(data.usage || {})}`);
-    const text = data.content[0].text.replace(/```json|```/g, '').trim();
-    log('debug', `Claude brief raw response:\n${text.slice(0, 500)}${text.length > 500 ? '...' : ''}`);
+    const data2 = await res2.json();
+    log('success', `Claude scene brief ← ${dur2}s, usage: ${JSON.stringify(data2.usage || {})}`);
+    const text2 = data2.content[0].text.replace(/```json|```/g, '').trim();
+    log('debug', `Scene brief raw:\n${text2.slice(0, 500)}${text2.length > 500 ? '...' : ''}`);
 
     let brief;
     try {
-      brief = JSON.parse(text);
+      brief = JSON.parse(text2);
     } catch (parseErr) {
-      log('error', `Brief JSON parse failed: ${parseErr.message}\nRaw text: ${text}`);
+      log('error', `Scene brief JSON parse failed: ${parseErr.message}\nRaw: ${text2}`);
       throw parseErr;
     }
 
@@ -585,7 +656,8 @@ Rules:
     }
 
     applyBrief(brief);
-    log('success', `Brief applied: ${brief.map((s, i) => `S${i + 1}: "${(s.overlay || '').slice(0, 30)}"`).join(', ')}`);
+    const totalDur = ((performance.now() - t0) / 1000).toFixed(1);
+    log('success', `Brief applied (${totalDur}s total): ${brief.map((s, i) => `S${i + 1}: "${(s.overlay || '').slice(0, 30)}"`).join(', ')}`);
     statusEl.textContent = 'Brief applied! Review and edit before generating.';
     statusEl.style.color = 'var(--green)';
     setTimeout(() => { statusEl.style.display = 'none'; statusEl.style.color = 'var(--text-muted)'; }, 4000);
@@ -1207,27 +1279,32 @@ async function generateCopy(businessName, targetAudience, adObjective, offer, cl
     return parts.join(' ');
   }).join('\n');
 
+  // Use brand analysis if available from two-step brief generation
+  const brandAnalysisBlock = pipeline.brandAnalysis
+    ? `\n=== BRAND PROFILE (from analysis) ===\n${JSON.stringify(pipeline.brandAnalysis, null, 2)}\n`
+    : '';
+
   const brandUrl = document.getElementById('brandUrl').value.trim();
-  const brandLine = brandUrl ? `\nBrand Website: ${brandUrl}` : '';
-  const brandContextBlock = pipeline.brandContext
-    ? `\n${pipeline.brandContext}`
+  const brandLine = !brandAnalysisBlock && brandUrl ? `\nBrand Website: ${brandUrl}` : '';
+  const brandContextBlock = !brandAnalysisBlock && pipeline.brandContext
+    ? `\nBrand Website Content:\n${pipeline.brandContext}\n`
     : '';
 
   const prompt = `You are an expert Facebook ad copywriter. Write copy that speaks DIRECTLY to the target audience and sells the specific product/offer described below.
 
 Business/Product: ${businessName}
-Target Audience: ${targetAudience}
+Target Audience: ${targetAudience || 'general audience'}
 Ad Objective: ${adObjective}
-${offer ? `Offer/Hook: ${offer}` : 'No specific offer provided — create a compelling value proposition'}${brandLine}${brandContextBlock}
+${offer ? `Offer/Hook: ${offer}` : 'No specific offer provided — create a compelling value proposition'}${brandLine}${brandAnalysisBlock}${brandContextBlock}
 
 The video ad tells this story:
 ${scenesText}
 
 IMPORTANT:
-- The primary text MUST reference the specific business "${businessName}" and speak to "${targetAudience}"
+- The primary text MUST reference the specific business "${businessName}" and speak to "${targetAudience || 'the target audience'}"
 - ${offer ? `Feature the offer "${offer}" prominently` : 'Create a specific, compelling reason to act now'}
 - The headline must be about THIS product/business, not generic
-- Match the brand's tone if brand context is provided above
+- Match the brand's tone${pipeline.brandAnalysis?.tone ? ` (${pipeline.brandAnalysis.tone})` : ' if brand context is provided above'}
 
 Return ONLY valid JSON — no markdown, no preamble:
 {
@@ -1310,12 +1387,13 @@ function copyText(btn, text) {
 // ── Pipeline state ───────────────────────────
 
 const pipeline = {
-  sceneData: [],   // collected inputs from scene cards
-  imageUrls: [],   // image URL per scene (from Flux or upload)
-  clipData: [],    // { blobUrl, overlay, overlayPos, duration, description } per scene
-  dims: null,      // format dimensions
+  sceneData: [],     // collected inputs from scene cards
+  imageUrls: [],     // image URL per scene (from Flux or upload)
+  clipData: [],      // { blobUrl, overlay, overlayPos, duration, description } per scene
+  dims: null,        // format dimensions
   totalCost: 0,
-  brandContext: '', // scraped brand website text, persisted across phases
+  brandContext: '',   // scraped brand website text, persisted across phases
+  brandAnalysis: null, // structured brand profile from step 1, used in copy generation
 };
 
 // ── Stage HTML generators ────────────────────
@@ -1769,8 +1847,36 @@ function startOver() {
   pipeline.dims = null;
   pipeline.totalCost = 0;
   pipeline.brandContext = '';
+  pipeline.brandAnalysis = null;
 
+  // Reset pipeline UI
   document.getElementById('pipeline').style.display = 'none';
+  document.getElementById('sceneStages').innerHTML = '';
+  document.getElementById('videoStages').innerHTML = '';
+  document.getElementById('videoStages').style.display = 'none';
+  document.getElementById('finalStages').style.display = 'none';
+  document.getElementById('approveImagesBtn').style.display = 'none';
+  document.getElementById('approveClipsBtn').style.display = 'none';
+  document.getElementById('outputSection').style.display = 'none';
+  document.getElementById('downloadWrap').style.display = 'none';
+  document.getElementById('costBar').style.display = 'none';
+  document.getElementById('startOverBtn').style.display = 'none';
+  document.getElementById('copyPanel').style.display = 'none';
+
+  // Release preview video src
+  const previewVideo = document.getElementById('previewVideo');
+  if (previewVideo.src) { previewVideo.removeAttribute('src'); previewVideo.load(); }
+
+  // Release download links
+  const dlFinal = document.getElementById('downloadFinal');
+  if (dlFinal.href) dlFinal.removeAttribute('href');
+  const dlWorker = document.getElementById('downloadWorker');
+  dlWorker.style.display = 'none';
+  if (dlWorker.href) dlWorker.removeAttribute('href');
+
+  // Re-enable buttons
   document.getElementById('generateBtn').disabled = false;
   document.getElementById('generateBtn').textContent = 'Generate Images';
+  document.getElementById('generateBriefBtn').disabled = false;
+  document.getElementById('generateBriefBtn').textContent = 'Generate Ad Brief';
 }
