@@ -548,43 +548,71 @@ function copyText(btn, text) {
   setTimeout(() => btn.textContent = 'Copy', 2000);
 }
 
-// ── Pipeline stage HTML generators ───────────
+// ── Pipeline state ───────────────────────────
 
-function createSceneStageHTML(sceneIndex, sceneCount) {
+const pipeline = {
+  sceneData: [],   // collected inputs from scene cards
+  imageUrls: [],   // image URL per scene (from Flux or upload)
+  clipData: [],    // { blobUrl, overlay, overlayPos, duration, description } per scene
+  dims: null,      // format dimensions
+  totalCost: 0,
+};
+
+// ── Stage HTML generators ────────────────────
+
+function createImageStageHTML(i) {
   return `
-    <div class="stage" id="stageScene${sceneIndex}">
+    <div class="stage" id="stageImg${i}">
       <div class="stage-header">
-        <span class="stage-name">Scene ${sceneIndex + 1} &middot; Image + Video</span>
-        <span class="badge badge-wait" id="badgeScene${sceneIndex}">Waiting</span>
+        <span class="stage-name">Scene ${i + 1} &middot; Image</span>
+        <span class="badge badge-wait" id="badgeImg${i}">Waiting</span>
       </div>
-      <div class="progress-bar"><div class="progress-fill" id="progScene${sceneIndex}" style="width:0%"></div></div>
-      <div class="stage-msg" id="msgScene${sceneIndex}">Ready</div>
+      <div class="progress-bar"><div class="progress-fill" id="progImg${i}" style="width:0%"></div></div>
+      <div class="stage-msg" id="msgImg${i}">Ready</div>
+      <div class="stage-preview" id="previewImg${i}" style="display:none"></div>
+      <div class="stage-actions" id="actionsImg${i}" style="display:none">
+        <button class="btn-regen" onclick="regenerateImage(${i})">Regenerate Image</button>
+      </div>
     </div>`;
 }
 
-function setSceneStage(idx, status, msg, progress) {
-  setStage('Scene' + idx, status, msg, progress);
+function createVideoStageHTML(i) {
+  return `
+    <div class="stage" id="stageVid${i}">
+      <div class="stage-header">
+        <span class="stage-name">Scene ${i + 1} &middot; Video</span>
+        <span class="badge badge-wait" id="badgeVid${i}">Waiting</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="progVid${i}" style="width:0%"></div></div>
+      <div class="stage-msg" id="msgVid${i}">Ready</div>
+      <div class="stage-preview" id="previewVid${i}" style="display:none"></div>
+      <div class="stage-actions" id="actionsVid${i}" style="display:none">
+        <button class="btn-regen" onclick="regenerateVideo(${i})">Regenerate Video</button>
+      </div>
+    </div>`;
 }
 
-// ── Main pipeline ────────────────────────────
+function setImgStage(i, status, msg, progress) { setStage('Img' + i, status, msg, progress); }
+function setVidStage(i, status, msg, progress) { setStage('Vid' + i, status, msg, progress); }
 
-async function startPipeline() {
-  const falKey = document.getElementById('falKey').value.trim();
-  const anthropicKey = document.getElementById('anthropicKey').value.trim();
-  const businessName = document.getElementById('businessName').value.trim();
-  const targetAudience = document.getElementById('targetAudience').value.trim();
-  const adObjective = document.getElementById('adObjective').value;
-  const adFormat = document.getElementById('adFormat').value;
-  const offer = document.getElementById('offerHook').value.trim();
-  const workerUrl = document.getElementById('workerUrl').value.trim();
+function showImagePreview(i, url) {
+  const container = document.getElementById('previewImg' + i);
+  container.innerHTML = `<img src="${url}" alt="Scene ${i + 1}" />`;
+  container.style.display = 'block';
+  document.getElementById('actionsImg' + i).style.display = 'flex';
+}
 
-  if (!falKey) { alert('Please enter your fal.ai API key'); return; }
+function showVideoPreview(i, blobUrl) {
+  const container = document.getElementById('previewVid' + i);
+  container.innerHTML = `<video src="${blobUrl}" controls muted playsinline></video>`;
+  container.style.display = 'block';
+  document.getElementById('actionsVid' + i).style.display = 'flex';
+}
 
-  // Save worker URL
-  if (workerUrl) localStorage.setItem('meta-ad-worker-url', workerUrl);
+// ── Collect scene inputs ─────────────────────
 
-  // Collect scene data
-  const sceneData = scenes.map(scene => {
+function collectSceneData() {
+  return scenes.map(scene => {
     const id = scene.id;
     const isUpload = document.querySelector(`input[name="imgSrc-${id}"][value="upload"]`)?.checked || false;
     return {
@@ -598,111 +626,229 @@ async function startPipeline() {
       duration: document.getElementById(`duration-${id}`)?.value || '5',
     };
   });
+}
 
-  // Validate
-  for (let i = 0; i < sceneData.length; i++) {
-    const s = sceneData[i];
+// ── Phase 1: Generate Images ─────────────────
+
+async function generateOneImage(i) {
+  const scene = pipeline.sceneData[i];
+  const falKey = document.getElementById('falKey').value.trim();
+  const dims = pipeline.dims;
+
+  if (scene.isUpload) {
+    setImgStage(i, 'running', 'Resizing & uploading...', 20);
+    const url = await uploadImageToFal(scene.file, falKey, dims);
+    pipeline.imageUrls[i] = url;
+    setImgStage(i, 'done', 'Image uploaded', 100);
+    showImagePreview(i, url);
+  } else {
+    setImgStage(i, 'running', 'Generating image...', 10);
+    const result = await falRun('fal-ai/flux/schnell', {
+      prompt: scene.description,
+      image_size: dims.image_size,
+      num_inference_steps: 4,
+      num_images: 1,
+      enable_safety_checker: true,
+    }, falKey, p => setImgStage(i, 'running', 'Generating...', p));
+
+    const url = result?.data?.images?.[0]?.url || result?.images?.[0]?.url;
+    if (!url) throw new Error('No image URL returned');
+    pipeline.imageUrls[i] = url;
+    pipeline.totalCost += 0.003;
+    setImgStage(i, 'done', 'Image ready', 100);
+    showImagePreview(i, url);
+  }
+}
+
+async function generateImages() {
+  const falKey = document.getElementById('falKey').value.trim();
+  if (!falKey) { alert('Please enter your fal.ai API key'); return; }
+
+  // Save worker URL
+  const workerUrl = document.getElementById('workerUrl').value.trim();
+  if (workerUrl) try { localStorage.setItem('meta-ad-worker-url', workerUrl); } catch(e) {}
+
+  // Collect and validate
+  pipeline.sceneData = collectSceneData();
+  pipeline.dims = getFormatDims(document.getElementById('adFormat').value);
+  pipeline.imageUrls = new Array(pipeline.sceneData.length).fill(null);
+  pipeline.clipData = [];
+  pipeline.totalCost = 0;
+
+  for (let i = 0; i < pipeline.sceneData.length; i++) {
+    const s = pipeline.sceneData[i];
     if (s.isUpload && !s.file) { alert(`Scene ${i + 1}: Please select an image to upload`); return; }
     if (!s.isUpload && !s.description) { alert(`Scene ${i + 1}: Please enter a scene description`); return; }
   }
 
-  const dims = getFormatDims(adFormat);
-
-  // Reset UI
+  // Set up UI
   document.getElementById('generateBtn').disabled = true;
   document.getElementById('pipeline').style.display = 'block';
-  document.getElementById('costBar').style.display = 'none';
-  document.getElementById('previewVideo').style.display = 'none';
-  document.getElementById('downloadWrap').style.display = 'none';
+  document.getElementById('approveImagesBtn').style.display = 'none';
+  document.getElementById('videoStages').style.display = 'none';
+  document.getElementById('approveClipsBtn').style.display = 'none';
+  document.getElementById('finalStages').style.display = 'none';
   document.getElementById('outputSection').style.display = 'none';
-  document.getElementById('copyPanel').style.display = 'none';
+  document.getElementById('costBar').style.display = 'none';
+  document.getElementById('startOverBtn').style.display = 'none';
 
-  // Build scene stage UI
-  const stagesContainer = document.getElementById('sceneStages');
-  stagesContainer.innerHTML = sceneData.map((_, i) => createSceneStageHTML(i, sceneData.length)).join('');
+  // Build image stage cards
+  document.getElementById('sceneStages').innerHTML =
+    pipeline.sceneData.map((_, i) => createImageStageHTML(i)).join('');
 
-  // Reset fixed stages
-  setStage('Stitch', 'wait', 'Waiting for all scenes', 0);
-  setStage('Upload', 'wait', 'Waiting for stitching', 0);
-  setStage('Copy', 'wait', 'Waiting', 0);
-
-  let totalCost = 0;
-
-  // ── Phase 1: Generate all scenes in parallel ──
-
-  const clipResults = await Promise.allSettled(sceneData.map(async (scene, i) => {
-    // Step 1: Get image URL
-    let imageUrl;
-    if (scene.isUpload) {
-      setSceneStage(i, 'running', 'Resizing image...', 5);
-      imageUrl = await uploadImageToFal(scene.file, falKey, dims);
-      setSceneStage(i, 'running', 'Image uploaded, generating video...', 25);
-    } else {
-      setSceneStage(i, 'running', 'Generating image...', 10);
-      const imgResult = await falRun('fal-ai/flux/schnell', {
-        prompt: scene.description,
-        image_size: dims.image_size,
-        num_inference_steps: 4,
-        num_images: 1,
-        enable_safety_checker: true,
-      }, falKey, p => setSceneStage(i, 'running', 'Generating image...', Math.round(p * 0.3)));
-
-      imageUrl = imgResult?.data?.images?.[0]?.url || imgResult?.images?.[0]?.url;
-      if (!imageUrl) throw new Error('No image URL returned from Flux');
-      totalCost += 0.003;
-      setSceneStage(i, 'running', 'Image ready, generating video...', 30);
-    }
-
-    // Step 2: Animate with Seedance
-    const vidResult = await falRun('fal-ai/bytedance/seedance/v1/lite/image-to-video', {
-      image_url: imageUrl,
-      prompt: scene.motion,
-      aspect_ratio: dims.aspect_ratio,
-      duration: parseInt(scene.duration),
-    }, falKey, p => setSceneStage(i, 'running', 'Animating...', 30 + Math.round(p * 0.6)));
-
-    const videoUrl = vidResult?.data?.video?.url || vidResult?.video?.url;
-    if (!videoUrl) throw new Error('No video URL returned from Seedance');
-    totalCost += 0.18;
-
-    setSceneStage(i, 'running', 'Downloading clip...', 92);
-
-    // Fetch the clip blob
-    const response = await fetch(videoUrl);
-    if (!response.ok) throw new Error(`Failed to fetch video clip ${i + 1}`);
-    const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
-
-    setSceneStage(i, 'done', 'Scene ready', 100);
-
-    return {
-      blobUrl,
-      overlay: scene.overlay,
-      overlayPos: scene.overlayPos,
-      duration: scene.duration,
-      description: scene.description || 'Uploaded image',
-    };
-  }));
+  // Generate all images in parallel
+  const results = await Promise.allSettled(
+    pipeline.sceneData.map((_, i) => generateOneImage(i))
+  );
 
   // Check for failures
-  const clips = [];
-  let anyFailed = false;
-  for (let i = 0; i < clipResults.length; i++) {
-    if (clipResults[i].status === 'rejected') {
-      setSceneStage(i, 'error', clipResults[i].reason?.message || 'Failed', 0);
-      anyFailed = true;
-    } else {
-      clips.push(clipResults[i].value);
+  let allOk = true;
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      setImgStage(i, 'error', r.reason?.message || 'Failed', 0);
+      allOk = false;
     }
-  }
+  });
 
-  if (anyFailed || clips.length < MIN_SCENES) {
-    setStage('Stitch', 'error', 'Not enough scenes completed', 0);
+  // Update cost display
+  document.getElementById('costValue').textContent = `~$${pipeline.totalCost.toFixed(2)}`;
+  document.getElementById('costBar').style.display = 'flex';
+
+  if (allOk) {
+    // Show approval gate
+    document.getElementById('approveImagesBtn').style.display = 'block';
+  } else {
     document.getElementById('generateBtn').disabled = false;
-    return;
   }
+}
 
-  // ── Phase 2: Stitch + Upload + Copy in parallel ──
+async function regenerateImage(i) {
+  const btn = document.querySelector(`#actionsImg${i} .btn-regen`);
+  btn.disabled = true;
+  try {
+    // Re-read the description from the scene card (user may have edited it)
+    const scene = pipeline.sceneData[i];
+    const id = scene.id;
+    if (!scene.isUpload) {
+      scene.description = document.getElementById(`desc-${id}`)?.value?.trim() || scene.description;
+    }
+    await generateOneImage(i);
+  } catch (e) {
+    setImgStage(i, 'error', e.message, 0);
+  }
+  btn.disabled = false;
+  document.getElementById('costValue').textContent = `~$${pipeline.totalCost.toFixed(2)}`;
+}
+
+// ── Phase 2: Generate Videos ─────────────────
+
+async function generateOneVideo(i) {
+  const scene = pipeline.sceneData[i];
+  const falKey = document.getElementById('falKey').value.trim();
+  const dims = pipeline.dims;
+  const imageUrl = pipeline.imageUrls[i];
+
+  // Re-read motion prompt from scene card (user may have edited)
+  const id = scene.id;
+  scene.motion = document.getElementById(`motion-${id}`)?.value?.trim() || scene.motion;
+  scene.overlay = document.getElementById(`overlay-${id}`)?.value?.trim() || scene.overlay;
+  scene.overlayPos = document.getElementById(`overlayPos-${id}`)?.value || scene.overlayPos;
+  scene.duration = document.getElementById(`duration-${id}`)?.value || scene.duration;
+
+  setVidStage(i, 'running', 'Animating...', 10);
+  const vidResult = await falRun('fal-ai/bytedance/seedance/v1/lite/image-to-video', {
+    image_url: imageUrl,
+    prompt: scene.motion,
+    aspect_ratio: dims.aspect_ratio,
+    duration: parseInt(scene.duration),
+  }, falKey, p => setVidStage(i, 'running', 'Animating...', p));
+
+  const videoUrl = vidResult?.data?.video?.url || vidResult?.video?.url;
+  if (!videoUrl) throw new Error('No video URL returned');
+  pipeline.totalCost += 0.18;
+
+  setVidStage(i, 'running', 'Downloading clip...', 92);
+  const response = await fetch(videoUrl);
+  if (!response.ok) throw new Error('Failed to download clip');
+  const blob = await response.blob();
+  const blobUrl = URL.createObjectURL(blob);
+
+  pipeline.clipData[i] = {
+    blobUrl,
+    overlay: scene.overlay,
+    overlayPos: scene.overlayPos,
+    duration: scene.duration,
+    description: scene.description || 'Uploaded image',
+  };
+
+  setVidStage(i, 'done', 'Video ready', 100);
+  showVideoPreview(i, blobUrl);
+}
+
+async function approveImages() {
+  document.getElementById('approveImagesBtn').style.display = 'none';
+
+  // Build video stage cards
+  const container = document.getElementById('videoStages');
+  container.innerHTML = pipeline.sceneData.map((_, i) => createVideoStageHTML(i)).join('');
+  container.style.display = 'block';
+
+  pipeline.clipData = new Array(pipeline.sceneData.length).fill(null);
+
+  // Generate all videos in parallel
+  const results = await Promise.allSettled(
+    pipeline.sceneData.map((_, i) => generateOneVideo(i))
+  );
+
+  let allOk = true;
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      setVidStage(i, 'error', r.reason?.message || 'Failed', 0);
+      allOk = false;
+    }
+  });
+
+  document.getElementById('costValue').textContent = `~$${pipeline.totalCost.toFixed(2)}`;
+
+  if (allOk) {
+    document.getElementById('approveClipsBtn').style.display = 'block';
+  }
+}
+
+async function regenerateVideo(i) {
+  const btn = document.querySelector(`#actionsVid${i} .btn-regen`);
+  btn.disabled = true;
+  try {
+    // Revoke old blob URL
+    if (pipeline.clipData[i]?.blobUrl) URL.revokeObjectURL(pipeline.clipData[i].blobUrl);
+    await generateOneVideo(i);
+  } catch (e) {
+    setVidStage(i, 'error', e.message, 0);
+  }
+  btn.disabled = false;
+  document.getElementById('costValue').textContent = `~$${pipeline.totalCost.toFixed(2)}`;
+}
+
+// ── Phase 3: Stitch + Upload + Copy ──────────
+
+async function approveClips() {
+  document.getElementById('approveClipsBtn').style.display = 'none';
+  document.getElementById('finalStages').style.display = 'block';
+
+  const dims = pipeline.dims;
+  const clips = pipeline.clipData.filter(Boolean);
+  const workerUrl = document.getElementById('workerUrl').value.trim();
+  const anthropicKey = document.getElementById('anthropicKey').value.trim();
+  const businessName = document.getElementById('businessName').value.trim();
+  const targetAudience = document.getElementById('targetAudience').value.trim();
+  const adObjective = document.getElementById('adObjective').value;
+  const offer = document.getElementById('offerHook').value.trim();
+
+  // Reset stages
+  setStage('Stitch', 'wait', 'Starting...', 0);
+  setStage('Upload', 'wait', 'Waiting for stitching', 0);
+  setStage('Copy', 'wait', 'Waiting', 0);
+  document.getElementById('copyPanel').style.display = 'none';
 
   const stitchTask = (async () => {
     try {
@@ -720,7 +866,6 @@ async function startPipeline() {
 
       setStage('Stitch', 'done', `Stitched ${clips.length} scenes`, 100);
 
-      // Upload to R2 if worker URL provided
       if (workerUrl) {
         try {
           const r2Url = await uploadToR2(finalBlob, workerUrl);
@@ -755,7 +900,7 @@ async function startPipeline() {
       const copy = await generateCopy(businessName, targetAudience, adObjective, offer, descriptions, anthropicKey);
       renderCopy(copy);
       setStage('Copy', 'done', 'Ad copy ready', 100);
-      totalCost += 0.003;
+      pipeline.totalCost += 0.003;
     } catch (e) {
       setStage('Copy', 'error', e.message, 0);
     }
@@ -763,7 +908,23 @@ async function startPipeline() {
 
   await Promise.all([stitchTask, copyTask]);
 
-  document.getElementById('costValue').textContent = `~$${totalCost.toFixed(2)}`;
-  document.getElementById('costBar').style.display = 'flex';
+  document.getElementById('costValue').textContent = `~$${pipeline.totalCost.toFixed(2)}`;
+  document.getElementById('startOverBtn').style.display = 'block';
+}
+
+// ── Start Over ───────────────────────────────
+
+function startOver() {
+  // Clean up blob URLs
+  pipeline.clipData.forEach(c => { if (c?.blobUrl) URL.revokeObjectURL(c.blobUrl); });
+
+  pipeline.sceneData = [];
+  pipeline.imageUrls = [];
+  pipeline.clipData = [];
+  pipeline.dims = null;
+  pipeline.totalCost = 0;
+
+  document.getElementById('pipeline').style.display = 'none';
   document.getElementById('generateBtn').disabled = false;
+  document.getElementById('generateBtn').textContent = 'Generate Images';
 }
