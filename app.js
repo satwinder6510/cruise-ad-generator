@@ -11,6 +11,18 @@ const MIN_SCENES = 3;
 const MAX_SCENES = 4;
 const CROSSFADE_DURATION = 0.5; // seconds
 
+// ── Overlay style presets ──────────────────────
+const OVERLAY_STYLES = {
+  clean:     { weight: 600, color: '#ffffff',              bg: 'pill',     bgColor: 'rgba(0,0,0,0.5)',  shadow: 'subtle',  spacing: '0px',     transform: 'none' },
+  bold:      { weight: 800, color: '#ffffff',              bg: 'none',     bgColor: null,               shadow: 'outline', spacing: '0.02em',  transform: 'uppercase' },
+  cinematic: { weight: 600, color: '#ffffff',              bg: 'gradient', bgColor: null,               shadow: 'none',    spacing: '0.12em',  transform: 'uppercase' },
+  minimal:   { weight: 400, color: 'rgba(255,255,255,0.9)', bg: 'none',   bgColor: null,               shadow: 'subtle',  spacing: '0.04em',  transform: 'none' },
+  highlight: { weight: 700, color: '#ffffff',              bg: 'pill',     bgColor: '#4f7df9',          shadow: 'none',    spacing: '0px',     transform: 'none' },
+  subtitle:  { weight: 500, color: '#ffffff',              bg: 'bar',      bgColor: 'rgba(0,0,0,0.65)', shadow: 'none',    spacing: '0px',     transform: 'none' },
+};
+
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
 // ── Error handler ────────────────────────────
 
 window.onerror = function(msg, src, line) {
@@ -104,6 +116,36 @@ function renderScenes() {
         </div>
       </div>
 
+      <div class="grid-3">
+        <div class="field">
+          <label>Overlay Style</label>
+          <select id="overlayStyle-${scene.id}">
+            <option value="clean" selected>Clean</option>
+            <option value="bold">Bold</option>
+            <option value="cinematic">Cinematic</option>
+            <option value="minimal">Minimal</option>
+            <option value="highlight">Highlight</option>
+            <option value="subtitle">Subtitle</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Font Size</label>
+          <select id="overlaySize-${scene.id}">
+            <option value="small">Small</option>
+            <option value="medium" selected>Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Text Animation</label>
+          <select id="overlayAnim-${scene.id}">
+            <option value="fade" selected>Fade</option>
+            <option value="slide-up">Slide Up</option>
+            <option value="typewriter">Typewriter</option>
+          </select>
+        </div>
+      </div>
+
       <div class="field">
         <label>Scene Duration</label>
         <select id="duration-${scene.id}">
@@ -148,6 +190,9 @@ function collectAllSceneValues() {
       motion: document.getElementById(`motion-${id}`)?.value || '',
       overlay: document.getElementById(`overlay-${id}`)?.value || '',
       overlayPos: document.getElementById(`overlayPos-${id}`)?.value || 'centre',
+      overlayStyle: document.getElementById(`overlayStyle-${id}`)?.value || 'clean',
+      overlaySize: document.getElementById(`overlaySize-${id}`)?.value || 'medium',
+      overlayAnim: document.getElementById(`overlayAnim-${id}`)?.value || 'fade',
       duration: document.getElementById(`duration-${id}`)?.value || '5',
     };
   });
@@ -162,6 +207,9 @@ function restoreAllSceneValues(values) {
     if (document.getElementById(`motion-${id}`)) document.getElementById(`motion-${id}`).value = v.motion;
     if (document.getElementById(`overlay-${id}`)) document.getElementById(`overlay-${id}`).value = v.overlay;
     if (document.getElementById(`overlayPos-${id}`)) document.getElementById(`overlayPos-${id}`).value = v.overlayPos;
+    if (document.getElementById(`overlayStyle-${id}`)) document.getElementById(`overlayStyle-${id}`).value = v.overlayStyle || 'clean';
+    if (document.getElementById(`overlaySize-${id}`)) document.getElementById(`overlaySize-${id}`).value = v.overlaySize || 'medium';
+    if (document.getElementById(`overlayAnim-${id}`)) document.getElementById(`overlayAnim-${id}`).value = v.overlayAnim || 'fade';
     if (document.getElementById(`duration-${id}`)) document.getElementById(`duration-${id}`).value = v.duration;
     if (v.isUpload) {
       const radio = document.querySelector(`input[name="imgSrc-${id}"][value="upload"]`);
@@ -276,22 +324,46 @@ async function uploadImageToFal(file, apiKey, dims) {
 
 // ── Canvas text overlay ──────────────────────
 
-function drawTextOverlay(ctx, text, alpha, cW, cH, position) {
+function drawTextOverlay(ctx, text, alpha, cW, cH, position, styleName, sizeName, animation, progress) {
   if (alpha <= 0 || !text) return;
   alpha = Math.max(0, Math.min(1, alpha));
+  if (typeof progress !== 'number') progress = 1;
 
-  const fontSize = Math.round(cW * 0.048);
+  const style = OVERLAY_STYLES[styleName] || OVERLAY_STYLES.clean;
+
+  // Font size
+  const sizeMap = { small: 0.032, medium: 0.048, large: 0.068 };
+  const fontSize = Math.round(cW * (sizeMap[sizeName] || sizeMap.medium));
+
+  // Apply text transform
+  let displayText = text;
+  if (style.transform === 'uppercase') displayText = text.toUpperCase();
+
+  // Typewriter: truncate text based on progress
+  if (animation === 'typewriter' && progress < 1) {
+    const charCount = Math.floor(displayText.length * progress);
+    displayText = displayText.substring(0, charCount);
+  }
+
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.shadowColor = 'rgba(0,0,0,0.85)';
-  ctx.shadowBlur = 12;
-  ctx.shadowOffsetX = 2;
-  ctx.shadowOffsetY = 2;
-  ctx.font = `600 ${fontSize}px 'Inter', system-ui, sans-serif`;
+
+  // Slide-up animation: blend alpha with eased progress
+  if (animation === 'slide-up' && progress < 1) {
+    const eased = easeOutCubic(progress);
+    ctx.globalAlpha = alpha * eased;
+    ctx.translate(0, 40 * (1 - eased));
+  } else {
+    ctx.globalAlpha = alpha;
+  }
+
+  ctx.font = `${style.weight} ${fontSize}px 'Inter', system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  if (typeof ctx.letterSpacing !== 'undefined') {
+    ctx.letterSpacing = style.spacing;
+  }
 
-  const lines = text.split('\\n');
+  const lines = displayText.split('\\n');
   const lineH = fontSize * 1.4;
   let yBase;
   if (position === 'top') yBase = cH * 0.14;
@@ -303,19 +375,57 @@ function drawTextOverlay(ctx, text, alpha, cW, cH, position) {
   const boxW = maxW + padX * 2;
   const boxH = lines.length * lineH + padY * 2;
 
-  // Background pill
+  // Clear any inherited shadow before drawing background
   ctx.shadowColor = 'transparent';
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  ctx.beginPath();
-  ctx.roundRect(cW / 2 - boxW / 2, yBase - boxH / 2, boxW, boxH, 8);
-  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
 
-  // Text
-  ctx.shadowColor = 'rgba(0,0,0,0.85)';
-  ctx.fillStyle = '#ffffff';
+  // Draw background
+  if (style.bg === 'pill') {
+    ctx.fillStyle = style.bgColor;
+    ctx.beginPath();
+    ctx.roundRect(cW / 2 - boxW / 2, yBase - boxH / 2, boxW, boxH, 8);
+    ctx.fill();
+  } else if (style.bg === 'bar') {
+    ctx.fillStyle = style.bgColor;
+    ctx.fillRect(0, yBase - boxH / 2, cW, boxH);
+  } else if (style.bg === 'gradient') {
+    const gradH = boxH * 2.5;
+    const grad = ctx.createLinearGradient(0, yBase - gradH / 2, 0, yBase + gradH / 2);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.3, 'rgba(0,0,0,0.7)');
+    grad.addColorStop(0.7, 'rgba(0,0,0,0.7)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, yBase - gradH / 2, cW, gradH);
+  }
+  // 'none' — no background
+
+  // Set up text shadow
+  if (style.shadow === 'subtle') {
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
+  }
+
+  // Draw outline stroke for 'outline' shadow style
+  if (style.shadow === 'outline') {
+    ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    lines.forEach((line, i) => {
+      ctx.strokeText(line, cW / 2, yBase - ((lines.length - 1) / 2 - i) * lineH);
+    });
+  }
+
+  // Draw text fill
+  ctx.fillStyle = style.color;
   lines.forEach((line, i) => {
     ctx.fillText(line, cW / 2, yBase - ((lines.length - 1) / 2 - i) * lineH);
   });
+
   ctx.restore();
 }
 
@@ -427,11 +537,17 @@ async function stitchScenes(clipData, dims) {
         // Text overlay
         if (clipData[i].overlay) {
           const overlayFade = 0.3;
+          const animInDur = 0.5;
           let textAlpha = 1;
           if (localTime < overlayFade) textAlpha = localTime / overlayFade;
           if (localTime > sceneDur - overlayFade) textAlpha = (sceneDur - localTime) / overlayFade;
           textAlpha = Math.min(textAlpha, alpha);
-          drawTextOverlay(ctx, clipData[i].overlay, textAlpha, canvas.width, canvas.height, clipData[i].overlayPos);
+
+          // Animation progress: 0→1 over first 0.5s of the scene
+          const progress = Math.min(localTime / animInDur, 1);
+
+          drawTextOverlay(ctx, clipData[i].overlay, textAlpha, canvas.width, canvas.height,
+            clipData[i].overlayPos, clipData[i].overlayStyle, clipData[i].overlaySize, clipData[i].overlayAnim, progress);
         }
       }
 
@@ -623,6 +739,9 @@ function collectSceneData() {
       motion: document.getElementById(`motion-${id}`)?.value?.trim() || 'slow cinematic camera movement',
       overlay: document.getElementById(`overlay-${id}`)?.value?.trim() || '',
       overlayPos: document.getElementById(`overlayPos-${id}`)?.value || 'centre',
+      overlayStyle: document.getElementById(`overlayStyle-${id}`)?.value || 'clean',
+      overlaySize: document.getElementById(`overlaySize-${id}`)?.value || 'medium',
+      overlayAnim: document.getElementById(`overlayAnim-${id}`)?.value || 'fade',
       duration: document.getElementById(`duration-${id}`)?.value || '5',
     };
   });
@@ -753,6 +872,9 @@ async function generateOneVideo(i) {
   scene.motion = document.getElementById(`motion-${id}`)?.value?.trim() || scene.motion;
   scene.overlay = document.getElementById(`overlay-${id}`)?.value?.trim() || scene.overlay;
   scene.overlayPos = document.getElementById(`overlayPos-${id}`)?.value || scene.overlayPos;
+  scene.overlayStyle = document.getElementById(`overlayStyle-${id}`)?.value || scene.overlayStyle || 'clean';
+  scene.overlaySize = document.getElementById(`overlaySize-${id}`)?.value || scene.overlaySize || 'medium';
+  scene.overlayAnim = document.getElementById(`overlayAnim-${id}`)?.value || scene.overlayAnim || 'fade';
   scene.duration = document.getElementById(`duration-${id}`)?.value || scene.duration;
 
   setVidStage(i, 'running', 'Animating...', 10);
@@ -777,6 +899,9 @@ async function generateOneVideo(i) {
     blobUrl,
     overlay: scene.overlay,
     overlayPos: scene.overlayPos,
+    overlayStyle: scene.overlayStyle || 'clean',
+    overlaySize: scene.overlaySize || 'medium',
+    overlayAnim: scene.overlayAnim || 'fade',
     duration: scene.duration,
     description: scene.description || 'Uploaded image',
   };
