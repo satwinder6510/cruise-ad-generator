@@ -173,9 +173,17 @@ function restoreAllSceneValues(values) {
 // ── Helpers ───────────────────────────────────
 
 function getFormatDims(fmt) {
-  if (fmt === '9:16') return { image_size: 'portrait_16_9', aspect_ratio: '9:16', w: 720, h: 1280 };
-  if (fmt === '1:1') return { image_size: 'square_hd', aspect_ratio: '1:1', w: 1080, h: 1080 };
-  return { image_size: 'landscape_16_9', aspect_ratio: '16:9', w: 1280, h: 720 };
+  // image_size = Flux Schnell preset, aspect_ratio = Seedance Lite param
+  // w/h = canvas dimensions for stitching
+  const formats = {
+    '16:9': { image_size: 'landscape_16_9',  aspect_ratio: '16:9', w: 1280, h: 720  },
+    '9:16': { image_size: 'portrait_16_9',   aspect_ratio: '9:16', w: 720,  h: 1280 },
+    '1:1':  { image_size: 'square_hd',       aspect_ratio: '1:1',  w: 1080, h: 1080 },
+    '4:3':  { image_size: 'landscape_4_3',   aspect_ratio: '4:3',  w: 1024, h: 768  },
+    '3:4':  { image_size: 'portrait_4_3',    aspect_ratio: '3:4',  w: 768,  h: 1024 },
+    '21:9': { image_size: { width: 1344, height: 576 }, aspect_ratio: '21:9', w: 1344, h: 576 },
+  };
+  return formats[fmt] || formats['16:9'];
 }
 
 function setStage(id, status, msg, progress) {
