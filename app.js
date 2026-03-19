@@ -1083,6 +1083,87 @@ async function stitchScenes(clipData, dims) {
   });
 }
 
+// ── FFmpeg WASM: WebM → MP4 conversion ───────
+
+let _ffmpeg = null;
+
+async function loadFFmpeg() {
+  if (_ffmpeg) return _ffmpeg;
+
+  log('info', 'Loading FFmpeg WASM (first time only)...');
+  setStage('Convert', 'running', 'Loading FFmpeg WASM...', 5);
+
+  const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
+  const { toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
+
+  const ffmpeg = new FFmpeg();
+
+  ffmpeg.on('log', ({ message }) => {
+    log('debug', `ffmpeg: ${message}`);
+  });
+
+  ffmpeg.on('progress', ({ progress }) => {
+    const pct = Math.round(progress * 100);
+    setStage('Convert', 'running', `Converting: ${pct}%`, 10 + Math.round(pct * 0.85));
+  });
+
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+
+  log('success', 'FFmpeg WASM loaded');
+  _ffmpeg = ffmpeg;
+  return ffmpeg;
+}
+
+async function convertToMp4(webmBlob) {
+  setStage('Convert', 'running', 'Loading FFmpeg...', 5);
+  const t0 = performance.now();
+
+  try {
+    const ffmpeg = await loadFFmpeg();
+
+    // Write WebM to FFmpeg virtual filesystem
+    const webmData = new Uint8Array(await webmBlob.arrayBuffer());
+    await ffmpeg.writeFile('input.webm', webmData);
+    log('info', `FFmpeg input: ${(webmData.length / 1024 / 1024).toFixed(1)}MB WebM`);
+
+    setStage('Convert', 'running', 'Converting to MP4 H.264...', 12);
+
+    // Convert: WebM VP9 → MP4 H.264 + AAC
+    await ffmpeg.exec([
+      '-i', 'input.webm',
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '23',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-an',
+      'output.mp4'
+    ]);
+
+    const mp4Data = await ffmpeg.readFile('output.mp4');
+    const mp4Blob = new Blob([mp4Data], { type: 'video/mp4' });
+
+    // Clean up virtual filesystem
+    await ffmpeg.deleteFile('input.webm');
+    await ffmpeg.deleteFile('output.mp4');
+
+    const dur = ((performance.now() - t0) / 1000).toFixed(1);
+    log('success', `=== CONVERSION COMPLETE: ${(mp4Blob.size / 1024 / 1024).toFixed(1)}MB MP4 in ${dur}s ===`);
+    setStage('Convert', 'done', `MP4 ready (${(mp4Blob.size / 1024 / 1024).toFixed(1)}MB)`, 100);
+
+    return mp4Blob;
+  } catch (e) {
+    const dur = ((performance.now() - t0) / 1000).toFixed(1);
+    log('error', `FFmpeg conversion failed after ${dur}s: ${e.message}${e.stack ? '\n' + e.stack : ''}`);
+    setStage('Convert', 'error', e.message, 0);
+    throw e;
+  }
+}
+
 // ── R2 Upload ────────────────────────────────
 
 async function uploadToR2(blob, workerUrl) {
@@ -1585,26 +1666,45 @@ async function approveClips() {
 
   // Reset stages
   setStage('Stitch', 'wait', 'Starting...', 0);
-  setStage('Upload', 'wait', 'Waiting for stitching', 0);
+  setStage('Convert', 'wait', 'Waiting for stitching', 0);
+  setStage('Upload', 'wait', 'Waiting for conversion', 0);
   setStage('Copy', 'wait', 'Waiting', 0);
   document.getElementById('copyPanel').style.display = 'none';
 
   const stitchTask = (async () => {
     try {
-      const finalBlob = await stitchScenes(clips, dims);
-      const finalUrl = URL.createObjectURL(finalBlob);
+      // Phase 3a: Stitch WebM
+      const webmBlob = await stitchScenes(clips, dims);
 
+      // Show WebM preview immediately while conversion runs
+      const previewUrl = URL.createObjectURL(webmBlob);
       document.getElementById('outputSection').style.display = 'block';
-      document.getElementById('previewVideo').src = finalUrl;
+      document.getElementById('previewVideo').src = previewUrl;
       document.getElementById('previewVideo').style.display = 'block';
-
-      const ext = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      document.getElementById('downloadFinal').href = finalUrl;
-      document.getElementById('downloadFinal').setAttribute('download', `meta-ad-${Date.now()}.${ext}`);
-      document.getElementById('downloadWrap').style.display = 'block';
-
       setStage('Stitch', 'done', `Stitched ${clips.length} scenes`, 100);
 
+      // Phase 3b: Convert WebM → MP4
+      let finalBlob;
+      try {
+        finalBlob = await convertToMp4(webmBlob);
+        // Update preview to MP4
+        const mp4Url = URL.createObjectURL(finalBlob);
+        document.getElementById('previewVideo').src = mp4Url;
+        URL.revokeObjectURL(previewUrl);
+      } catch (convertErr) {
+        log('warn', `MP4 conversion failed — falling back to WebM: ${convertErr.message}`);
+        finalBlob = webmBlob;
+        // Convert stage already marked as error by convertToMp4
+      }
+
+      const ext = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
+      const dlUrl = URL.createObjectURL(finalBlob);
+      document.getElementById('downloadFinal').href = dlUrl;
+      document.getElementById('downloadFinal').setAttribute('download', `meta-ad-${Date.now()}.${ext}`);
+      document.getElementById('downloadFinal').textContent = `Download Final Video (${ext.toUpperCase()})`;
+      document.getElementById('downloadWrap').style.display = 'block';
+
+      // Phase 3c: Upload to R2
       if (workerUrl) {
         try {
           const r2Url = await uploadToR2(finalBlob, workerUrl);
