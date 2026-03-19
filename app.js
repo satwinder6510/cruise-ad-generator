@@ -79,10 +79,29 @@ function maskKey(key) {
   return key.slice(0, 6) + '...' + key.slice(-4);
 }
 
+// ── ESM import helper (Safari cross-origin workaround) ──
+
+async function importEsm(url) {
+  try {
+    return await import(url);
+  } catch {
+    // Safari blocks cross-origin dynamic import — fetch source and import via blob URL
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch module: ${url} (${res.status})`);
+    const src = await res.text();
+    const blob = new Blob([src], { type: 'text/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+      return await import(blobUrl);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+}
+
 // ── State ────────────────────────────────────
 
 let scenes = [];
-let falClient = null;
 let productImages = []; // Array of { file: File, previewUrl: string, falUrl: string|null }
 const MIN_SCENES = 3;
 const MAX_SCENES = 4;
@@ -806,47 +825,67 @@ function setStage(id, status, msg, progress) {
   if (prog) prog.style.width = progress + '%';
 }
 
-// ── fal.ai client ────────────────────────────
-
-async function getFalClient(apiKey) {
-  if (!falClient) {
-    log('info', 'Loading fal.ai client from esm.sh...');
-    try {
-      const mod = await import('https://esm.sh/@fal-ai/client');
-      falClient = mod.fal;
-      log('success', 'fal.ai client loaded');
-    } catch (e) {
-      log('error', `Failed to load fal.ai client: ${e.message}`);
-      throw e;
-    }
-  }
-  falClient.config({ credentials: apiKey });
-  return falClient;
-}
+// ── fal.ai REST client (no external dependency) ──
 
 async function falRun(endpoint, input, apiKey, onProgress) {
-  const fal = await getFalClient(apiKey);
   const inputSummary = { ...input };
   if (inputSummary.image_url) inputSummary.image_url = inputSummary.image_url.slice(0, 60) + '...';
   log('info', `fal.ai → ${endpoint}`, inputSummary);
   const t0 = performance.now();
   let attempt = 0;
+
+  const headers = {
+    'Authorization': `Key ${apiKey}`,
+    'Content-Type': 'application/json'
+  };
+
   try {
-    const result = await fal.subscribe(endpoint, {
-      input,
-      pollInterval: 3000,
-      onQueueUpdate: (update) => {
-        attempt++;
-        log('debug', `fal.ai poll #${attempt} for ${endpoint}: ${update?.status || 'polling'}`);
-        if (onProgress) onProgress(Math.min(15 + attempt * 3, 88));
-      }
+    // Submit to queue
+    const submitRes = await fetch(`https://queue.fal.run/${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(input)
     });
+    if (!submitRes.ok) {
+      const err = await submitRes.json().catch(() => ({}));
+      throw new Error(err.detail || `Submit failed: ${submitRes.status}`);
+    }
+    const { request_id } = await submitRes.json();
+    log('debug', `fal.ai queued: ${request_id}`);
+
+    // Poll for completion
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      attempt++;
+      const statusRes = await fetch(
+        `https://queue.fal.run/${endpoint}/requests/${request_id}/status`,
+        { headers }
+      );
+      if (!statusRes.ok) throw new Error(`Status poll failed: ${statusRes.status}`);
+      const status = await statusRes.json();
+      log('debug', `fal.ai poll #${attempt} for ${endpoint}: ${status.status}`);
+      if (onProgress) onProgress(Math.min(15 + attempt * 3, 88));
+
+      if (status.status === 'COMPLETED') break;
+      if (status.status === 'FAILED') {
+        throw new Error(status.error || 'fal.ai job failed');
+      }
+    }
+
+    // Fetch result
+    const resultRes = await fetch(
+      `https://queue.fal.run/${endpoint}/requests/${request_id}`,
+      { headers }
+    );
+    if (!resultRes.ok) throw new Error(`Result fetch failed: ${resultRes.status}`);
+    const result = await resultRes.json();
+
     const dur = ((performance.now() - t0) / 1000).toFixed(1);
     log('success', `fal.ai ← ${endpoint} done in ${dur}s`);
     return result;
   } catch (e) {
     const dur = ((performance.now() - t0) / 1000).toFixed(1);
-    log('error', `fal.ai ← ${endpoint} FAILED after ${dur}s: ${e.message}${e.body ? '\n' + JSON.stringify(e.body) : ''}`);
+    log('error', `fal.ai ← ${endpoint} FAILED after ${dur}s: ${e.message}`);
     throw e;
   }
 }
@@ -1165,8 +1204,8 @@ async function loadFFmpeg() {
   log('info', 'Loading FFmpeg WASM (first time only)...');
   setStage('Convert', 'running', 'Loading FFmpeg WASM...', 5);
 
-  const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
-  const { toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
+  const { FFmpeg } = await importEsm('https://esm.sh/@ffmpeg/ffmpeg@0.12.10?bundle');
+  const { toBlobURL } = await importEsm('https://esm.sh/@ffmpeg/util@0.12.1?bundle');
 
   const ffmpeg = new FFmpeg();
 
